@@ -1,0 +1,147 @@
+module sensitivity	
+	subroutine sensitivity_analysis(n,r, X, Y, x0, xp, yp, grad, H)
+	  implicit none
+	  !-------------------------
+	  ! Input/Output
+	  !-------------------------
+	  integer, intent(in) :: r, n              ! Valori interi per le dimensioni
+	  real(8), intent(in) :: X(1:r:,1:n), Y(1:r)      ! Dati Monte Carlo: X (r x n), Y (r)
+	  real(8), intent(in) :: x0(1:n)             ! Punto attorno a cui stimare sensitività
+	  real(8), intent(in) :: xp(1:n)             ! Punto in cui voglio fare la previsione
+	  real(8), intent(out) :: yp               ! Valore previsto in xp
+	  real(8), intent(out), optional :: grad(:)! Gradiente stimata (opzionale)
+	  real(8), intent(out), optional :: H(:,:) ! Hessiana stimata (opzionale)
+	  
+	  !-------------------------
+	  ! Variabili locali
+	  !-------------------------
+      integer :: , i, j, k, p, nquad, nz
+	  real(8), allocatable :: Xtil(:,:), Z(:,:), ZTZ(:,:), ZTY(:), theta(:)
+	  real(8), allocatable :: dx(:)
+	  
+	  ! Numero di termini quadratici: n*(n+1)/2
+	  nquad = n*(n+1)/2
+	  nz = 1 + n + nquad  ! 1 costante + n lineari + termini quadratici
+	  
+	  ! Allocazione matrici
+	  allocate(Xtil(r,n), Z(r,nz), ZTZ(nz,nz), ZTY(nz), theta(nz))
+	  
+	  !-------------------------
+	  ! Centro i dati su x0
+	  !-------------------------
+	  do i = 1, r
+		 Xtil(i,:) = X(i,:) - x0(:)
+	  end do
+	  
+	  !-------------------------
+	  ! Costruisco la matrice Z: [1 | Xtil | termini quadratici]
+	  !-------------------------
+	  Z(:,1) = 1.0d0
+	  Z(:,2:n+1) = Xtil(:,:)
+	  p = n + 2
+	  do i = 1, n
+		 do j = i, n
+			Z(:,p) = Xtil(:,i) * Xtil(:,j)
+			p = p + 1
+		 end do
+	  end do
+	  
+	  !-------------------------
+	  ! Calcolo Z^T*Z e Z^T*Y per regressione
+	  !-------------------------
+	  ZTZ = 0.0d0
+	  ZTY = 0.0d0
+	  do i = 1, nz
+		 do j = 1, nz
+			do k = 1, r
+			   ZTZ(i,j) = ZTZ(i,j) + Z(k,i) * Z(k,j)
+			end do
+		 end do
+		 do k = 1, r
+			ZTY(i) = ZTY(i) + Z(k,i) * Y(k)
+		 end do
+	  end do
+	  
+	  !-------------------------
+	  ! Risolvo sistema normale ZTZ*theta = ZTY con eliminazione di Gauss
+	  !-------------------------
+	  call gaussian_elimination(ZTZ, ZTY, theta, nz)
+	  
+	  !-------------------------
+	  ! Se richiesto, estraggo gradiente e Hessiana
+	  !-------------------------
+	  if (present(grad)) then
+		 grad = theta(2:n+1)
+	  end if
+	  
+	  if (present(H)) then
+		 H = 0.0d0
+		 p = n + 2
+		 do i = 1, n
+			do j = i, n
+			   H(i,j) = theta(p)
+			   H(j,i) = theta(p)
+			   p = p + 1
+			end do
+		 end do
+	  end if
+	  
+	  !-------------------------
+	  ! Previsione in xp usando espansione di Taylor locale
+	  ! y(xp) = y(x0) + grad^T * dx + 0.5 * dx^T * H * dx
+	  !-------------------------
+	  allocate(dx(n))
+	  dx = xp - x0
+	  
+	  ! Termini lineari
+	  yp = theta(1)  ! termine costante
+	  do i = 1, n
+		 yp = yp + theta(i+1)*dx(i)
+	  end do
+	  
+	  ! Termini quadratici
+	  p = n + 2
+	  do i = 1, n
+		 do j = i, n
+			yp = yp + 0.5d0 * theta(p) * dx(i) * dx(j) * (1.0d0 + merge(0.0d0,1.0d0, i/=j))
+			p = p + 1
+		 end do
+	  end do
+	  
+	  ! Deallocazione
+	  deallocate(Xtil,Z,ZTZ,ZTY,theta,dx)
+	  
+	end subroutine
+
+	!---------------------------------------------------
+	subroutine gaussian_elimination(A, b, x, n)
+	  implicit none
+	  integer, intent(in) :: n
+	  real(8), intent(inout) :: A(n,n)
+	  real(8), intent(inout) :: b(n)
+	  real(8), intent(out) :: x(n)
+	  integer :: i, j, k
+	  real(8) :: factor
+
+	  ! Eliminazione gaussiana
+	  do k = 1, n-1
+		 do i = k+1, n
+			factor = A(i,k)/A(k,k)
+			do j = k, n
+			   A(i,j) = A(i,j) - factor*A(k,j)
+			end do
+			b(i) = b(i) - factor*b(k)
+		 end do
+	  end do
+
+	  ! Back substitution
+	  x(n) = b(n)/A(n,n)
+	  do i = n-1, 1, -1
+		 x(i) = b(i)
+		 do j = i+1, n
+			x(i) = x(i) - A(i,j)*x(j)
+		 end do
+		 x(i) = x(i)/A(i,i)
+	  end do
+	end subroutine
+end module sensitivity
